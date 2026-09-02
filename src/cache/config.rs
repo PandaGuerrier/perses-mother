@@ -4,7 +4,7 @@ use super::error::{CacheError, Result};
 
 /// Hôte par défaut : le conteneur du `compose.yaml` n'écoute qu'en local.
 pub const DEFAULT_HOST: &str = "127.0.0.1";
-pub const DEFAULT_PORT: u16 = 6379;
+pub const DEFAULT_PORT: u16 = 6300;
 /// Préfixe appliqué à toutes les clés, pour cohabiter avec d'autres usages
 /// de la même instance.
 pub const DEFAULT_NAMESPACE: &str = "perses";

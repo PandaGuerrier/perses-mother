@@ -7,7 +7,7 @@ services:
     # Internet, et un Redis joignable de l'extérieur est un vecteur d'intrusion
     # classique. Les clients passent par l'hôte ou par le réseau du compose.
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:6300:6379"
     command:
       - redis-server
       - --requirepass
