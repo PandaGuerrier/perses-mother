@@ -1,0 +1,10 @@
+[package]
+name = "perses-mother"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22"
+pcap = "2.5.0"
+thiserror = "2"
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
