@@ -109,7 +109,7 @@ mod tests {
             password: Some("secret-du-vps".to_string()),
             ..Default::default()
         };
-        assert_eq!(cfg.endpoint(), "127.0.0.1:6379/0");
+        assert_eq!(cfg.endpoint(), format!("{DEFAULT_HOST}:{DEFAULT_PORT}/0"));
         assert!(!cfg.endpoint().contains("secret"));
     }
 

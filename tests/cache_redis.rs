@@ -26,11 +26,24 @@ fn cache(namespace: &str) -> Option<Cache> {
     match Cache::connect(config) {
         Ok(cache) => Some(cache),
         Err(e) => {
-            eprintln!("test ignoré — Redis injoignable ({e})");
+            skip_or_fail(e);
             None
         }
     }
 }
+
+/// Redis injoignable : on abandonne le test, sauf si le dépôt est configuré
+/// pour en avoir un — auquel cas le silence masquerait une régression.
+fn skip_or_fail(error: impl std::fmt::Display) {
+    if env_file_password().is_some() {
+        panic!(
+            "Redis injoignable alors que .env existe ({error})\n\
+             lancer `docker compose up -d redis`, ou supprimer .env pour ignorer ces tests"
+        );
+    }
+    eprintln!("test ignoré — pas de .env, Redis non configuré ({error})");
+}
+
 
 macro_rules! cache_or_skip {
     ($namespace:expr) => {

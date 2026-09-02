@@ -5,12 +5,14 @@
 //! trafic est seulement observé au passage.
 //!
 //! ```no_run
+//! use perses_mother::cache::{Cache, CacheConfig};
 //! use perses_mother::sniff::{self, SniffConfig};
 //!
 //! // Sous macOS l'interface logique `wg0` est un `utunN` : c'est ce nom-là
 //! // qu'attend la capture (voir `wg::resolve_device`).
-//! sniff::sniff(&SniffConfig::new("utun11"))?;
-//! # Ok::<(), sniff::SniffError>(())
+//! let cache = Cache::connect(CacheConfig::from_env()?)?;
+//! sniff::sniff(&SniffConfig::new("utun11"), cache)?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! Nécessite les droits root : la capture passe par `/dev/bpf` (macOS) ou

@@ -3,9 +3,10 @@
 use std::error::Error;
 use std::process::ExitCode;
 
+use perses_mother::cache::{Cache, CacheConfig};
+use perses_mother::filter::{self, FilterConfig, Policy, BLACKLIST_SET};
 use perses_mother::sniff::{self, SniffConfig};
 use perses_mother::wg::{self, ServerConfig, StartOutcome, StopOutcome};
-use perses_mother::cache::{Cache, CacheConfig};
 
 const USAGE: &str = "\
 perses-mother — gestion d'un serveur WireGuard
@@ -20,6 +21,9 @@ COMMANDES:
     status        Affiche l'état de l'interface
     listen        Écoute l'interface et affiche les noms de domaine visités
                   (requêtes DNS en clair et SNI des poignées de main TLS)
+    filter        Coupe les connexions vers les domaines de la liste noire
+                  (Linux : nécessite une règle iptables NFQUEUE)
+    blacklist     Gère la liste noire : add <domaine>… | rm <domaine>… | list
 
 OPTIONS:
     -i, --interface <NOM>     Nom de l'interface           (défaut: wg0)
@@ -30,12 +34,18 @@ OPTIONS:
         --device <IFACE>      listen: capture cette interface plutôt que le tunnel
         --filter <BPF>        listen: filtre de capture
                               (défaut: udp port 53 or tcp port 443)
+    -q, --queue <N>           filter: numéro de la file NFQUEUE (défaut: 0)
         --force               cold-start: régénère les clés existantes
     -h, --help                Affiche cette aide
 
 EXEMPLES:
     sudo perses-mother listen | sort -u      # domaines uniques, au fil de l'eau
     sudo perses-mother listen --device en0   # écouter une autre interface
+    perses-mother blacklist add pub.example  # interdire un domaine
+    sudo perses-mother filter                # appliquer la liste noire
+
+La liste noire est lue dans Redis : définir REDIS_PASSWORD dans
+l'environnement du processus (sudo -E, ou sudo VAR=... perses-mother …).
 ";
 
 fn main() -> ExitCode {
@@ -63,6 +73,10 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let cfg = &opts.server;
 
     let mut cache = Cache::connect(CacheConfig::from_env()?)?;
+
+    if !cache.exists("chatgpt.com")? {
+        cache.set("chatgpt.com", "true").ok();
+    }
 
     match command.as_str() {
         "cold-start" => {
@@ -116,6 +130,56 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             // sur une erreur fatale qui remonte ici.
             sniff::sniff(&sniff_cfg, cache)?;
         }
+        "blacklist" => {
+            let mut cache = Cache::connect(CacheConfig::from_env()?)?;
+            let (action, domains) = match opts.positional.split_first() {
+                Some((action, rest)) => (action.as_str(), rest),
+                None => ("list", &[][..]),
+            };
+            match action {
+                "add" => {
+                    require_domains(domains)?;
+                    for domain in domains {
+                        let added = cache.add_to_set(BLACKLIST_SET, domain)?;
+                        println!("{domain} {}", if added { "ajouté" } else { "déjà listé" });
+                    }
+                }
+                "rm" | "remove" => {
+                    require_domains(domains)?;
+                    for domain in domains {
+                        let removed = cache.remove_from_set(BLACKLIST_SET, domain)?;
+                        println!("{domain} {}", if removed { "retiré" } else { "absent" });
+                    }
+                }
+                "list" => {
+                    let mut domains = cache.set_members(BLACKLIST_SET)?;
+                    domains.sort();
+                    for domain in &domains {
+                        println!("{domain}");
+                    }
+                    eprintln!("{} domaine(s) dans la liste noire", domains.len());
+                }
+                other => {
+                    return Err(format!("action inconnue: {other} (add | rm | list)").into());
+                }
+            }
+        }
+        "filter" => {
+            let mut filter_cfg = FilterConfig::default();
+            if let Some(queue) = opts.queue {
+                filter_cfg.queue = queue;
+            }
+            let policy = Policy::new(Cache::connect(CacheConfig::from_env()?)?);
+            // Le filtre ne pose pas la règle lui-même : toucher au pare-feu
+            // d'un serveur en production est la décision de son administrateur.
+            eprintln!(
+                "règle à poser si ce n'est pas déjà fait :\n  {}",
+                filter::iptables_rule(filter_cfg.queue, &cfg.interface)
+            );
+            // `filter` boucle indéfiniment : on n'en sort que par Ctrl-C, ou
+            // sur une erreur fatale qui remonte ici.
+            filter::filter(&filter_cfg, policy)?;
+        }
         other => {
             return Err(format!("commande inconnue: {other}\n\n{USAGE}").into());
         }
@@ -130,6 +194,9 @@ struct Options {
     force: bool,
     device: Option<String>,
     filter: Option<String>,
+    queue: Option<u16>,
+    /// Arguments qui ne sont pas des options, dans l'ordre.
+    positional: Vec<String>,
 }
 
 fn parse_options(args: &[String]) -> Result<Options, Box<dyn Error>> {
@@ -151,9 +218,20 @@ fn parse_options(args: &[String]) -> Result<Options, Box<dyn Error>> {
             "-w" | "--wan" => cfg.wan_interface = Some(value()?),
             "--device" => opts.device = Some(value()?),
             "--filter" => opts.filter = Some(value()?),
+            "-q" | "--queue" => opts.queue = Some(value()?.parse()?),
             "--force" => opts.force = true,
-            other => return Err(format!("option inconnue: {other}").into()),
+            other if other.starts_with('-') => {
+                return Err(format!("option inconnue: {other}").into())
+            }
+            other => opts.positional.push(other.to_string()),
         }
     }
     Ok(opts)
+}
+
+fn require_domains(domains: &[String]) -> Result<(), Box<dyn Error>> {
+    if domains.is_empty() {
+        return Err("préciser au moins un domaine".into());
+    }
+    Ok(())
 }

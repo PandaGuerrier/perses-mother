@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod dns;
+pub mod filter;
 pub mod name;
 pub mod sniff;
 pub mod tls;

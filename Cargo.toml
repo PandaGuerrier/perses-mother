@@ -9,3 +9,8 @@ pcap = "2.5.0"
 redis = { version = "0.27", default-features = false }
 thiserror = "2"
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
+
+# NFQUEUE n'existe que sous Linux : la dépendance n'est tirée que pour cette
+# cible, pour que le projet reste compilable et testable sur macOS.
+[target.'cfg(target_os = "linux")'.dependencies]
+nfq = "0.2"

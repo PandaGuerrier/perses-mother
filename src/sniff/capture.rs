@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use std::io::{self, Write};
 use crate::cache::Cache;
 use crate::dns;
-
+use crate::filter::Policy;
 use super::packet::{self, LinkType, Segment, Transport};
 use super::reassembly::ClientHelloTracker;
 
@@ -90,10 +90,6 @@ pub fn sniff(cfg: &SniffConfig, mut cache: Cache) -> Result<Infallible, SniffErr
         if let Some(name) = domain_of(link, frame.data, &mut tracker) {
             cache.exists(&name).ok();
             report(&name, cache.exists(&name).ok());
-
-            if !cache.exists(&name).unwrap() {
-                cache.set(&name, "true").ok();
-            }
         }
     }
 }
