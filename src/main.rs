@@ -17,7 +17,8 @@ COMMANDES:
     start         Monte l'interface (wg-quick up) — nécessite root
     stop          Descend l'interface (wg-quick down) — nécessite root
     status        Affiche l'état de l'interface
-    listen        Écoute l'interface et affiche les noms de domaine résolus
+    listen        Écoute l'interface et affiche les noms de domaine visités
+                  (requêtes DNS en clair et SNI des poignées de main TLS)
 
 OPTIONS:
     -i, --interface <NOM>     Nom de l'interface           (défaut: wg0)
@@ -26,7 +27,8 @@ OPTIONS:
     -p, --port <PORT>         Port UDP d'écoute            (défaut: 51820)
     -w, --wan <IFACE>         Interface de sortie (ajoute les règles de NAT)
         --device <IFACE>      listen: capture cette interface plutôt que le tunnel
-        --filter <BPF>        listen: filtre de capture (défaut: udp port 53)
+        --filter <BPF>        listen: filtre de capture
+                              (défaut: udp port 53 or tcp port 443)
         --force               cold-start: régénère les clés existantes
     -h, --help                Affiche cette aide
 

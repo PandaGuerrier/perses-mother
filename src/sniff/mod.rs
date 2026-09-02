@@ -18,6 +18,8 @@
 
 pub mod capture;
 pub mod packet;
+pub mod reassembly;
 
 pub use capture::{sniff, SniffConfig, SniffError, DEFAULT_FILTER, DNS_PORT};
-pub use packet::{udp_datagram, Datagram, LinkType};
+pub use packet::{segment, LinkType, Segment, Transport};
+pub use reassembly::{ClientHelloTracker, FlowKey};

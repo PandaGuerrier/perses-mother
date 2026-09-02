@@ -5,12 +5,17 @@ use std::io::{self, Write};
 
 use crate::dns;
 
-use super::packet::{self, LinkType};
+use super::packet::{self, LinkType, Segment, Transport};
+use super::reassembly::ClientHelloTracker;
 
 /// Port du service DNS.
 pub const DNS_PORT: u16 = 53;
 /// Filtre BPF appliqué dans le noyau : seul ce trafic remonte jusqu'à nous.
-pub const DEFAULT_FILTER: &str = "udp port 53";
+///
+/// Deux sources de noms : les requêtes DNS en clair, et le SNI des poignées
+/// de main TLS — celui-ci reste lisible même quand le client chiffre son DNS
+/// (DoH/DoT), ce qui est devenu le cas par défaut.
+pub const DEFAULT_FILTER: &str = "udp port 53 or tcp port 443";
 /// Octets conservés par paquet — de quoi couvrir un datagramme DNS complet.
 const SNAPLEN: i32 = 2048;
 /// Délai avant que libpcap ne rende la main sans paquet, en millisecondes.
@@ -74,6 +79,7 @@ pub fn sniff(cfg: &SniffConfig) -> Result<Infallible, SniffError> {
     // pour rester utilisable dans un pipe (`… | sort -u`).
     eprintln!("capture sur {} ({link:?}) — filtre: {}", cfg.device, cfg.filter);
 
+    let mut tracker = ClientHelloTracker::new();
     loop {
         let frame = match capture.next_packet() {
             Ok(frame) => frame,
@@ -81,7 +87,7 @@ pub fn sniff(cfg: &SniffConfig) -> Result<Infallible, SniffError> {
             Err(pcap::Error::TimeoutExpired) => continue,
             Err(e) => return Err(SniffError::Capture(e)),
         };
-        if let Some(name) = domain_of(link, frame.data) {
+        if let Some(name) = domain_of(link, frame.data, &mut tracker) {
             print_name(&name);
         }
     }
@@ -123,16 +129,26 @@ fn open_error(device: &str, source: pcap::Error) -> SniffError {
     }
 }
 
-/// Rend le nom demandé si la trame porte une requête DNS.
+/// Rend le nom de domaine porté par une trame, s'il y en a un.
+///
+/// Deux cas : une requête DNS en clair, ou le SNI d'un ClientHello TLS.
+fn domain_of(link: LinkType, frame: &[u8], tracker: &mut ClientHelloTracker) -> Option<String> {
+    let segment = packet::segment(link, frame)?;
+    match segment.protocol {
+        Transport::Udp => dns_name(&segment),
+        Transport::Tcp => tracker.observe((&segment).into(), segment.payload),
+    }
+}
+
+/// Nom demandé par une requête DNS.
 ///
 /// Les réponses sont écartées par [`dns::parse_query`] : sans cela, chaque nom
 /// apparaîtrait deux fois.
-fn domain_of(link: LinkType, frame: &[u8]) -> Option<String> {
-    let datagram = packet::udp_datagram(link, frame)?;
-    if datagram.dst_port != DNS_PORT {
+fn dns_name(segment: &Segment<'_>) -> Option<String> {
+    if segment.dst_port != DNS_PORT {
         return None;
     }
-    dns::parse_query(datagram.payload).ok().map(|q| q.name)
+    dns::parse_query(segment.payload).ok().map(|q| q.name)
 }
 
 /// Écrit un nom sur stdout, immédiatement.
@@ -150,15 +166,46 @@ fn print_name(name: &str) {
 mod tests {
     use super::*;
     use crate::dns::message::testing::query;
-    use crate::sniff::packet::testing::null_ipv4_udp;
+    use crate::sniff::packet::testing::{null_ipv4_tcp, null_ipv4_udp};
+    use crate::tls::client_hello::testing::client_hello;
+
+    fn domain(frame: &[u8]) -> Option<String> {
+        domain_of(LinkType::Null, frame, &mut ClientHelloTracker::new())
+    }
 
     #[test]
     fn reads_the_domain_out_of_a_captured_query() {
         let frame = null_ipv4_udp(51234, DNS_PORT, &query(0x1234, "www.rust-lang.org"));
+        assert_eq!(domain(&frame).as_deref(), Some("www.rust-lang.org"));
+    }
+
+    #[test]
+    fn reads_the_sni_out_of_a_captured_client_hello() {
+        let frame = null_ipv4_tcp(51234, 443, &client_hello("api.github.com"));
+        assert_eq!(domain(&frame).as_deref(), Some("api.github.com"));
+    }
+
+    #[test]
+    fn reads_the_sni_of_a_client_hello_split_across_two_frames() {
+        let hello = client_hello("github.com");
+        let (first, second) = hello.split_at(hello.len() / 2);
+        let mut tracker = ClientHelloTracker::new();
+
+        let frame = null_ipv4_tcp(51234, 443, first);
+        assert_eq!(domain_of(LinkType::Null, &frame, &mut tracker), None);
+
+        let frame = null_ipv4_tcp(51234, 443, second);
         assert_eq!(
-            domain_of(LinkType::Null, &frame).as_deref(),
-            Some("www.rust-lang.org")
+            domain_of(LinkType::Null, &frame, &mut tracker).as_deref(),
+            Some("github.com")
         );
+    }
+
+    #[test]
+    fn encrypted_traffic_yields_nothing() {
+        // Un record « application data » : la poignée de main est déjà finie.
+        let frame = null_ipv4_tcp(51234, 443, &[0x17, 0x03, 0x03, 0x01, 0x00]);
+        assert_eq!(domain(&frame), None);
     }
 
     #[test]
@@ -167,18 +214,18 @@ mod tests {
         response[2] |= 0x80; // QR = 1
         // Une réponse va du port 53 vers le client.
         let frame = null_ipv4_udp(DNS_PORT, 51234, &response);
-        assert_eq!(domain_of(LinkType::Null, &frame), None);
+        assert_eq!(domain(&frame), None);
     }
 
     #[test]
     fn skips_udp_traffic_that_is_not_dns() {
         let frame = null_ipv4_udp(51234, 443, b"quic, pas du dns");
-        assert_eq!(domain_of(LinkType::Null, &frame), None);
+        assert_eq!(domain(&frame), None);
     }
 
     #[test]
     fn a_garbage_payload_on_port_53_is_ignored() {
         let frame = null_ipv4_udp(51234, DNS_PORT, b"\xff\xff");
-        assert_eq!(domain_of(LinkType::Null, &frame), None);
+        assert_eq!(domain(&frame), None);
     }
 }

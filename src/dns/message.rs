@@ -129,22 +129,16 @@ fn read_name(packet: &[u8], start: usize) -> Result<(String, usize), ParseError>
     Ok((name, resume.unwrap_or(pos)))
 }
 
-/// Recopie un label en échappant tout ce qui n'est pas ASCII imprimable.
+/// Recopie un label en l'échappant.
 ///
-/// Ces octets viennent du réseau et finissent dans un terminal : sans
-/// échappement, un client hostile pourrait y glisser des séquences ANSI.
+/// Le point est le séparateur de labels : s'il apparaît *dans* un label, il
+/// doit être échappé pour ne pas se faire passer pour une frontière.
 fn escape_into(label: &[u8], out: &mut String) {
-    use std::fmt::Write as _;
     for &b in label {
-        match b {
-            b'.' | b'\\' => {
-                out.push('\\');
-                out.push(b as char);
-            }
-            0x21..=0x7E => out.push(b as char),
-            _ => {
-                let _ = write!(out, "\\{b:03}");
-            }
+        if b == b'.' {
+            out.push_str("\\.");
+        } else {
+            crate::name::escape_into(&[b], out);
         }
     }
 }
