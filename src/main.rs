@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use perses_mother::sniff::{self, SniffConfig};
 use perses_mother::wg::{self, ServerConfig, StartOutcome, StopOutcome};
+use perses_mother::cache::{Cache, CacheConfig};
 
 const USAGE: &str = "\
 perses-mother — gestion d'un serveur WireGuard
@@ -61,6 +62,8 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let opts = parse_options(&args[1..])?;
     let cfg = &opts.server;
 
+    let mut cache = Cache::connect(CacheConfig::from_env()?)?;
+
     match command.as_str() {
         "cold-start" => {
             let out = wg::cold_start(cfg, opts.force)?;
@@ -111,7 +114,7 @@ fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
             // `sniff` boucle indéfiniment : on n'en sort que par Ctrl-C, ou
             // sur une erreur fatale qui remonte ici.
-            sniff::sniff(&sniff_cfg)?;
+            sniff::sniff(&sniff_cfg, cache)?;
         }
         other => {
             return Err(format!("commande inconnue: {other}\n\n{USAGE}").into());

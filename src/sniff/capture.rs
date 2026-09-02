@@ -2,7 +2,7 @@
 
 use std::convert::Infallible;
 use std::io::{self, Write};
-
+use crate::cache::Cache;
 use crate::dns;
 
 use super::packet::{self, LinkType, Segment, Transport};
@@ -66,7 +66,7 @@ impl SniffConfig {
 ///
 /// Ne rend la main qu'en cas d'erreur fatale : le type de succès est
 /// [`Infallible`], un type qui n'a aucune valeur possible.
-pub fn sniff(cfg: &SniffConfig) -> Result<Infallible, SniffError> {
+pub fn sniff(cfg: &SniffConfig, mut cache: Cache) -> Result<Infallible, SniffError> {
     let mut capture = open(cfg)?;
 
     let dlt = capture.get_datalink();
@@ -88,7 +88,12 @@ pub fn sniff(cfg: &SniffConfig) -> Result<Infallible, SniffError> {
             Err(e) => return Err(SniffError::Capture(e)),
         };
         if let Some(name) = domain_of(link, frame.data, &mut tracker) {
-            print_name(&name);
+            cache.exists(&name).ok();
+            report(&name, cache.exists(&name).ok());
+
+            if !cache.exists(&name).unwrap() {
+                cache.set(&name, "true").ok();
+            }
         }
     }
 }
@@ -152,12 +157,12 @@ fn dns_name(segment: &Segment<'_>) -> Option<String> {
 }
 
 /// Écrit un nom sur stdout, immédiatement.
-fn print_name(name: &str) {
+fn report(name: &str, exists: Option<bool>) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     // Sortie redirigée vers un fichier ou un pipe : sans vidage explicite, les
     // noms resteraient bloqués dans le tampon.
-    if writeln!(out, "{name}").is_ok() {
+    if writeln!(out, "{name}, exist: {}", exists.unwrap_or(false)).is_ok() {
         let _ = out.flush();
     }
 }

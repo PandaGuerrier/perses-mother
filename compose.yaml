@@ -1,0 +1,38 @@
+services:
+  redis:
+    image: redis:8-alpine
+    container_name: perses-redis
+    restart: unless-stopped
+    # Écoute uniquement en local : ce service tourne sur un VPS exposé à
+    # Internet, et un Redis joignable de l'extérieur est un vecteur d'intrusion
+    # classique. Les clients passent par l'hôte ou par le réseau du compose.
+    ports:
+      - "127.0.0.1:6379:6379"
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?définir REDIS_PASSWORD dans .env}
+      # Journal d'écritures : les données survivent à un redémarrage.
+      - --appendonly
+      - "yes"
+      # Garde-fou mémoire : au-delà, les clés les moins utilisées sautent.
+      # À passer en « noeviction » si aucune perte n'est acceptable.
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    environment:
+      # Lu par redis-cli pour le healthcheck, sans exposer le mot de passe
+      # dans la ligne de commande.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?définir REDIS_PASSWORD dans .env}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  redis-data:
