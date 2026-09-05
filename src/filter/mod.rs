@@ -17,8 +17,10 @@
 //! La décision ([`Policy`]) est séparée de la file ([`queue`]) : la première
 //! est portable et testée, la seconde n'existe que sous Linux.
 
+pub mod module;
 pub mod policy;
 pub mod queue;
 
+pub use module::Blacklist;
 pub use policy::{Decision, Policy, Verdict, BLACKLIST_SET, SEEN_SET};
 pub use queue::{filter, iptables_rule, FilterConfig, FilterError, DEFAULT_QUEUE};

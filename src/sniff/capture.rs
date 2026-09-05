@@ -4,7 +4,6 @@ use std::convert::Infallible;
 use std::io::{self, Write};
 use crate::cache::Cache;
 use crate::dns;
-use crate::filter::Policy;
 use super::packet::{self, LinkType, Segment, Transport};
 use super::reassembly::ClientHelloTracker;
 
