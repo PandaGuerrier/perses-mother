@@ -72,6 +72,7 @@ impl ContractBase for Sniffer {
 
         cache.set("chatgpt.com", "true").expect("TODO: panic message");
         cache.set("ws.chatgpt.com", "true").expect("TODO: panic message");
+        cache.set("clientstream.launchdarkly.com", "true").expect("caca");
 
         self.health.store(true, Ordering::Relaxed);
         let outcome = capture::sniff(&cfg, cache);
