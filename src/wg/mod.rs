@@ -22,11 +22,13 @@
 pub mod config;
 pub mod error;
 pub mod keys;
+pub mod peers;
 pub mod server;
 
 pub use config::{Peer, ServerConfig, DEFAULT_ADDRESS, DEFAULT_INTERFACE, DEFAULT_LISTEN_PORT};
 pub use error::{Result, WgError};
 pub use keys::{generate_preshared_key, KeyPair};
+pub use peers::{dump, DeviceStatus, PeerStatus};
 pub use server::{
     cold_start, is_running, resolve_device, start, status, stop, Provisioning, StartOutcome,
     Status, StopOutcome,

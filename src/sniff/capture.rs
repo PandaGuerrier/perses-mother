@@ -2,10 +2,13 @@
 
 use std::convert::Infallible;
 use std::io::{self, Write};
-use crate::cache::Cache;
-use crate::dns;
+use std::net::IpAddr;
+
 use super::packet::{self, LinkType, Segment, Transport};
 use super::reassembly::ClientHelloTracker;
+use crate::cache::Cache;
+use crate::dns;
+use crate::report::{Observation, Reporter};
 
 /// Port du service DNS.
 pub const DNS_PORT: u16 = 53;
@@ -42,6 +45,16 @@ pub enum SniffError {
     Capture(#[source] pcap::Error),
 }
 
+/// Un nom observé, et qui l'a demandé.
+///
+/// L'adresse source est ce qui rattache le nom à un pair WireGuard : sans
+/// elle, un rapport ne dirait pas de quel client il parle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seen {
+    client: IpAddr,
+    domain: String,
+}
+
 /// Quoi écouter, et quoi en retenir.
 #[derive(Debug, Clone)]
 pub struct SniffConfig {
@@ -76,7 +89,14 @@ pub fn sniff(cfg: &SniffConfig, mut cache: Cache) -> Result<Infallible, SniffErr
 
     // Les traces vont sur stderr : stdout ne contient que des noms de domaine,
     // pour rester utilisable dans un pipe (`… | sort -u`).
-    eprintln!("capture sur {} ({link:?}) — filtre: {}", cfg.device, cfg.filter);
+    eprintln!(
+        "capture sur {} ({link:?}) — filtre: {}",
+        cfg.device, cfg.filter
+    );
+
+    // Signale au collecteur les domaines que le cache connaît, une ligne de
+    // JSON par observation dans `PERSES_SOCKET`.
+    let reporter = Reporter::from_env(&cfg.device);
 
     let mut tracker = ClientHelloTracker::new();
     loop {
@@ -86,9 +106,9 @@ pub fn sniff(cfg: &SniffConfig, mut cache: Cache) -> Result<Infallible, SniffErr
             Err(pcap::Error::TimeoutExpired) => continue,
             Err(e) => return Err(SniffError::Capture(e)),
         };
-        if let Some(name) = domain_of(link, frame.data, &mut tracker) {
-            cache.exists(&name).ok();
-            report(&name, cache.exists(&name).ok());
+        if let Some(seen) = domain_of(link, frame.data, &mut tracker) {
+            let exists = cache.exists(&seen.domain).ok();
+            report(&reporter, &seen, exists);
         }
     }
 }
@@ -132,12 +152,16 @@ fn open_error(device: &str, source: pcap::Error) -> SniffError {
 /// Rend le nom de domaine porté par une trame, s'il y en a un.
 ///
 /// Deux cas : une requête DNS en clair, ou le SNI d'un ClientHello TLS.
-fn domain_of(link: LinkType, frame: &[u8], tracker: &mut ClientHelloTracker) -> Option<String> {
+fn domain_of(link: LinkType, frame: &[u8], tracker: &mut ClientHelloTracker) -> Option<Seen> {
     let segment = packet::segment(link, frame)?;
-    match segment.protocol {
+    let domain = match segment.protocol {
         Transport::Udp => dns_name(&segment),
         Transport::Tcp => tracker.observe((&segment).into(), segment.payload),
-    }
+    }?;
+    Some(Seen {
+        client: segment.src,
+        domain,
+    })
 }
 
 /// Nom demandé par une requête DNS.
@@ -151,14 +175,26 @@ fn dns_name(segment: &Segment<'_>) -> Option<String> {
     dns::parse_query(segment.payload).ok().map(|q| q.name)
 }
 
-/// Écrit un nom sur stdout, immédiatement.
-fn report(name: &str, exists: Option<bool>) {
+/// Écrit un nom sur stdout, immédiatement, et signale au collecteur ceux que
+/// le cache connaît.
+///
+/// `exists` vaut `None` quand Redis n'a pas répondu : on ne rapporte alors
+/// rien, faute de savoir. Un domaine inconnu du cache n'est pas rapporté non
+/// plus — c'est du trafic ordinaire, et l'envoyer noierait le signal.
+fn report(reporter: &Reporter, seen: &Seen, exists: Option<bool>) {
+    let exists = exists.unwrap_or(false);
+
     let stdout = io::stdout();
     let mut out = stdout.lock();
     // Sortie redirigée vers un fichier ou un pipe : sans vidage explicite, les
     // noms resteraient bloqués dans le tampon.
-    if writeln!(out, "{name}, exist: {}", exists.unwrap_or(false)).is_ok() {
+    if writeln!(out, "{}, exist: {exists}", seen.domain).is_ok() {
         let _ = out.flush();
+    }
+    drop(out);
+
+    if exists {
+        reporter.report(Observation::now(seen.domain.clone(), seen.client));
     }
 }
 
@@ -170,13 +206,21 @@ mod tests {
     use crate::tls::client_hello::testing::client_hello;
 
     fn domain(frame: &[u8]) -> Option<String> {
-        domain_of(LinkType::Null, frame, &mut ClientHelloTracker::new())
+        domain_of(LinkType::Null, frame, &mut ClientHelloTracker::new()).map(|seen| seen.domain)
     }
 
     #[test]
     fn reads_the_domain_out_of_a_captured_query() {
         let frame = null_ipv4_udp(51234, DNS_PORT, &query(0x1234, "www.rust-lang.org"));
         assert_eq!(domain(&frame).as_deref(), Some("www.rust-lang.org"));
+    }
+
+    #[test]
+    fn keeps_the_address_of_whoever_asked() {
+        let frame = null_ipv4_udp(51234, DNS_PORT, &query(0x1234, "www.rust-lang.org"));
+        let seen = domain_of(LinkType::Null, &frame, &mut ClientHelloTracker::new()).unwrap();
+        // C'est cette adresse qui, côté rapport, désigne un pair WireGuard.
+        assert_eq!(seen.client, "10.8.0.2".parse::<IpAddr>().unwrap());
     }
 
     #[test]
@@ -195,10 +239,8 @@ mod tests {
         assert_eq!(domain_of(LinkType::Null, &frame, &mut tracker), None);
 
         let frame = null_ipv4_tcp(51234, 443, second);
-        assert_eq!(
-            domain_of(LinkType::Null, &frame, &mut tracker).as_deref(),
-            Some("github.com")
-        );
+        let seen = domain_of(LinkType::Null, &frame, &mut tracker).unwrap();
+        assert_eq!(seen.domain, "github.com");
     }
 
     #[test]
@@ -212,7 +254,7 @@ mod tests {
     fn skips_responses_so_each_name_appears_once() {
         let mut response = query(0x1234, "example.com");
         response[2] |= 0x80; // QR = 1
-        // Une réponse va du port 53 vers le client.
+                             // Une réponse va du port 53 vers le client.
         let frame = null_ipv4_udp(DNS_PORT, 51234, &response);
         assert_eq!(domain(&frame), None);
     }

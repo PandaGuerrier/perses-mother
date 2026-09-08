@@ -9,6 +9,7 @@ pub mod contracts;
 pub mod dns;
 pub mod filter;
 pub mod name;
+pub mod report;
 pub mod sniff;
 pub mod starter;
 pub mod tls;

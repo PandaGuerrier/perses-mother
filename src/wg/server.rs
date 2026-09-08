@@ -11,7 +11,7 @@ use super::error::{Result, WgError};
 use super::keys::KeyPair;
 
 const WG_QUICK: &str = "wg-quick";
-const WG: &str = "wg";
+pub(super) const WG: &str = "wg";
 /// Répertoire où `wg-quick` note la correspondance interface → périphérique.
 const RUN_DIR: &str = "/var/run/wireguard";
 
@@ -76,8 +76,14 @@ pub fn cold_start(cfg: &ServerConfig, force: bool) -> Result<Provisioning> {
     let keypair = KeyPair::generate();
     let rendered = cfg.render(&keypair.private_b64())?;
 
-    write_secret(&cfg.private_key_path(), &format!("{}\n", keypair.private_b64()))?;
-    write_public(&cfg.public_key_path(), &format!("{}\n", keypair.public_b64()))?;
+    write_secret(
+        &cfg.private_key_path(),
+        &format!("{}\n", keypair.private_b64()),
+    )?;
+    write_public(
+        &cfg.public_key_path(),
+        &format!("{}\n", keypair.public_b64()),
+    )?;
     write_secret(&config_path, &rendered)?;
 
     Ok(Provisioning {
@@ -169,7 +175,10 @@ fn device_name_file(dir: &Path, interface: &str) -> Result<Option<String>> {
         Ok(raw) => raw,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-            return Err(WgError::PermissionDenied(format!("lecture de {}", path.display())))
+            return Err(WgError::PermissionDenied(format!(
+                "lecture de {}",
+                path.display()
+            )))
         }
         Err(e) => return Err(WgError::io(&path, e)),
     };
@@ -240,7 +249,7 @@ fn write_public(path: &Path, contents: &str) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o644)).map_err(|e| WgError::io(path, e))
 }
 
-fn run(bin: &'static str, args: &[&std::ffi::OsStr]) -> Result<String> {
+pub(super) fn run(bin: &'static str, args: &[&std::ffi::OsStr]) -> Result<String> {
     let output = Command::new(bin)
         .args(args)
         .output()

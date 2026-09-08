@@ -12,6 +12,8 @@
 //! | `PERSES_BPF_FILTER` | `udp port 53 or tcp port 443` | filtre de capture |
 //! | `PERSES_QUEUE` | `0` | numéro de la file NFQUEUE |
 //! | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_DB` | voir `cache::CacheConfig` | accès à Redis |
+//! | `PERSES_SOCKET` | `/tmp/perses.socket` | fichier où les rapports sont écrits, une ligne chacun |
+//! | `PERSES_REPORT_QUEUE`, `PERSES_PEERS_TTL` | voir `report::ReportConfig` | écriture des rapports |
 //!
 //! ```sh
 //! sudo -E perses-mother
