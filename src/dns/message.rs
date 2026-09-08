@@ -1,7 +1,9 @@
-//! Décodage d'une requête DNS (RFC 1035).
+//! Décodage d'une requête DNS (RFC 1035), et refus d'un nom.
 //!
 //! On ne lit que ce qui nous intéresse : l'identifiant, et le nom de la
 //! première question. Le reste du paquet est transmis tel quel à l'amont.
+//! L'écriture se limite à [`nxdomain`] : la seule réponse que le démon
+//! fabrique lui-même, les autres viennent du résolveur amont.
 //!
 //! Format d'un paquet, en octets :
 //!
@@ -80,6 +82,46 @@ pub fn parse_query(packet: &[u8]) -> Result<Query, ParseError> {
     })
 }
 
+/// Code de retour « ce nom n'existe pas » (RFC 1035, §4.1.1).
+pub const RCODE_NXDOMAIN: u16 = 3;
+
+/// Identifiant d'un paquet, sans rien décoder d'autre.
+///
+/// Sert à rapprocher une réponse de l'amont de la requête qui l'a provoquée :
+/// un datagramme dont l'identifiant ne correspond pas est un égaré, ou une
+/// tentative d'empoisonnement.
+pub fn id(packet: &[u8]) -> Option<u16> {
+    (packet.len() >= HEADER_LEN).then(|| be_u16(packet, 0))
+}
+
+/// Fabrique la réponse « ce nom n'existe pas » à une requête.
+///
+/// La requête est renvoyée telle quelle, drapeaux réécrits : c'est le moyen
+/// le plus sûr de rendre au client la question qu'il a posée — il refuse une
+/// réponse dont la section question ne correspond pas à la sienne, octet pour
+/// octet. La section additionnelle est conservée : elle ne porte qu'un
+/// pseudo-enregistrement OPT (EDNS0) que le client s'attend à retrouver.
+///
+/// `None` si le paquet est trop court pour être une requête.
+pub fn nxdomain(request: &[u8]) -> Option<Vec<u8>> {
+    if request.len() < HEADER_LEN {
+        return None;
+    }
+    let mut response = request.to_vec();
+
+    // Du client on garde l'opcode (bits 11-14) et son « je veux la récursion »
+    // (RD) ; on pose QR (c'est une réponse), RA (la récursion est offerte) et
+    // le code de retour. AA reste à zéro : nous ne faisons pas autorité sur
+    // ce nom, nous refusons de le résoudre.
+    let flags = be_u16(request, 2);
+    let answer = 0x8000 | (flags & 0x7900) | 0x0080 | RCODE_NXDOMAIN;
+    response[2..4].copy_from_slice(&answer.to_be_bytes());
+
+    // ANCOUNT et NSCOUNT à zéro : un refus ne porte aucun enregistrement.
+    response[6..10].copy_from_slice(&[0; 4]);
+    Some(response)
+}
+
 /// Lit un nom à partir de `start`, et renvoie la position juste après lui.
 fn read_name(packet: &[u8], start: usize) -> Result<(String, usize), ParseError> {
     let mut name = String::new();
@@ -102,7 +144,9 @@ fn read_name(packet: &[u8], start: usize) -> Result<(String, usize), ParseError>
                 if bytes > MAX_NAME_LEN {
                     return Err(ParseError::NameTooLong);
                 }
-                let label = packet.get(pos..pos + len).ok_or(ParseError::UnexpectedEnd)?;
+                let label = packet
+                    .get(pos..pos + len)
+                    .ok_or(ParseError::UnexpectedEnd)?;
                 if !name.is_empty() {
                     name.push('.');
                 }
@@ -222,6 +266,42 @@ mod tests {
         packet[HEADER_LEN] = 0xC0; // pointeur…
         packet[HEADER_LEN + 1] = HEADER_LEN as u8; // …vers lui-même
         assert_eq!(parse_query(&packet), Err(ParseError::TooManyPointers));
+    }
+
+    #[test]
+    fn the_refusal_answers_the_question_that_was_asked() {
+        let request = query(0x1234, "interdit.example");
+        let response = nxdomain(&request).unwrap();
+
+        // Même identifiant et même question : sans cela le client jette la
+        // réponse au lieu de la croire.
+        assert_eq!(response[0..2], request[0..2]);
+        assert_eq!(response[HEADER_LEN..], request[HEADER_LEN..]);
+
+        let flags = u16::from_be_bytes([response[2], response[3]]);
+        assert_eq!(flags & 0x8000, 0x8000, "QR: c'est une réponse");
+        assert_eq!(flags & 0x000F, RCODE_NXDOMAIN, "le nom n'existe pas");
+        assert_eq!(flags & 0x0100, 0x0100, "RD du client conservé");
+        assert_eq!(flags & 0x0080, 0x0080, "RA: la récursion est offerte");
+        assert_eq!(flags & 0x0400, 0, "AA: nous ne faisons pas autorité");
+
+        // Une réponse sans enregistrement : QDCOUNT seul reste à 1.
+        assert_eq!(response[4..6], [0x00, 0x01]);
+        assert_eq!(response[6..10], [0x00; 4]);
+    }
+
+    #[test]
+    fn a_refusal_is_itself_a_readable_answer() {
+        let response = nxdomain(&query(7, "interdit.example")).unwrap();
+        // Le client la relira comme une réponse, pas comme une requête.
+        assert_eq!(parse_query(&response), Err(ParseError::NotAQuery));
+        assert_eq!(id(&response), Some(7));
+    }
+
+    #[test]
+    fn nothing_is_answered_to_a_stunted_packet() {
+        assert_eq!(nxdomain(&[0x12, 0x34]), None);
+        assert_eq!(id(&[0x12, 0x34]), None);
     }
 
     #[test]

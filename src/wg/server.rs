@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io::ErrorKind;
+use std::net::IpAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -11,6 +12,9 @@ use super::error::{Result, WgError};
 use super::keys::KeyPair;
 
 const WG_QUICK: &str = "wg-quick";
+/// Outils du système qui savent lire l'adresse d'un périphérique.
+const IP: &str = "ip";
+const IFCONFIG: &str = "ifconfig";
 pub(super) const WG: &str = "wg";
 /// Répertoire où `wg-quick` note la correspondance interface → périphérique.
 const RUN_DIR: &str = "/var/run/wireguard";
@@ -165,6 +169,60 @@ pub fn resolve_device(interface: &str) -> Result<Option<String>> {
     }
 }
 
+/// Adresse portée par un périphérique réseau, `None` s'il n'en a aucune.
+///
+/// C'est l'adresse du serveur *dans* le tunnel — celle sur laquelle les
+/// services destinés aux seuls pairs doivent écouter (voir
+/// [`crate::dns::Resolver`]). `wg show` ne la donne pas : elle appartient à la
+/// pile réseau, pas à WireGuard, et se lit avec l'outil du système — `ip` sous
+/// Linux, `ifconfig` sous macOS. Le premier des deux qui est installé et
+/// connaît le périphérique répond.
+pub fn interface_address(device: &str) -> Result<Option<IpAddr>> {
+    for bin in [IP, IFCONFIG] {
+        let args: Vec<&str> = if bin == IP {
+            vec!["-4", "-o", "addr", "show", "dev", device]
+        } else {
+            vec![device]
+        };
+        match Command::new(bin).args(&args).output() {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                if let Some(address) = parse_inet(&text) {
+                    return Ok(Some(address));
+                }
+            }
+            // L'outil existe mais ne connaît pas ce périphérique : on demande
+            // à l'autre plutôt que de conclure.
+            Ok(_) => continue,
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(binary_error(bin, e)),
+        }
+    }
+    Ok(None)
+}
+
+/// Première adresse `inet` d'une sortie d'`ip` ou d'`ifconfig`.
+///
+/// Les deux outils écrivent la même chose au même endroit : le mot `inet`,
+/// puis l'adresse — suffixée de son préfixe sous Linux (`10.8.0.1/24`), nue
+/// sous macOS (`inet 10.8.0.1 --> 10.8.0.1 netmask 0xffffff00`).
+fn parse_inet(output: &str) -> Option<IpAddr> {
+    let mut tokens = output.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token != "inet" {
+            continue;
+        }
+        let Some(value) = tokens.next() else {
+            return None;
+        };
+        let value = value.split('/').next().unwrap_or(value);
+        if let Ok(address) = value.parse() {
+            return Some(address);
+        }
+    }
+    None
+}
+
 /// Lit `<dir>/<interface>.name`, le fichier de correspondance de `wg-quick`.
 ///
 /// `Ok(None)` signifie « pas de correspondance » ; un refus de droits devient
@@ -282,6 +340,34 @@ fn binary_error(bin: &'static str, err: std::io::Error) -> WgError {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn reads_the_tunnel_address_out_of_either_tool() {
+        // `ip -4 -o addr show dev wg0`, sous Linux.
+        let linux = "4: wg0    inet 10.8.0.1/24 scope global wg0\\       valid_lft forever";
+        assert_eq!(
+            parse_inet(linux),
+            Some("10.8.0.1".parse::<IpAddr>().unwrap())
+        );
+
+        // `ifconfig utun11`, sous macOS.
+        let macos = "utun11: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1420\n\
+                     \tinet 10.8.0.1 --> 10.8.0.1 netmask 0xffffff00";
+        assert_eq!(
+            parse_inet(macos),
+            Some("10.8.0.1".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    #[test]
+    fn an_interface_without_an_address_yields_nothing() {
+        let up_but_bare = "utun11: flags=8051<UP,POINTOPOINT,RUNNING> mtu 1420";
+        assert_eq!(parse_inet(up_but_bare), None);
+        assert_eq!(parse_inet(""), None);
+        // Le mot est là, l'adresse ne suit pas : rien plutôt qu'un panic.
+        assert_eq!(parse_inet("inet"), None);
+        assert_eq!(parse_inet("inet pas-une-adresse"), None);
+    }
 
     fn temp_cfg(name: &str) -> ServerConfig {
         let dir = std::env::temp_dir().join(format!("perses-wg-{name}-{}", std::process::id()));

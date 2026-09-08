@@ -30,6 +30,6 @@ pub use error::{Result, WgError};
 pub use keys::{generate_preshared_key, KeyPair};
 pub use peers::{dump, DeviceStatus, PeerStatus};
 pub use server::{
-    cold_start, is_running, resolve_device, start, status, stop, Provisioning, StartOutcome,
-    Status, StopOutcome,
+    cold_start, interface_address, is_running, resolve_device, start, status, stop, Provisioning,
+    StartOutcome, Status, StopOutcome,
 };

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.22"
+dotenvy = "0.15.7"
 pcap = "2.5.0"
 redis = { version = "0.27", default-features = false }
 thiserror = "2"
