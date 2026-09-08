@@ -193,9 +193,9 @@ fn report(reporter: &Reporter, seen: &Seen, exists: Option<bool>) {
     }
     drop(out);
 
-    if exists {
+ //   if exists {
         reporter.report(Observation::now(seen.domain.clone(), seen.client));
-    }
+  //  }
 }
 
 #[cfg(test)]
