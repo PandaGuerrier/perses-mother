@@ -68,7 +68,9 @@ impl ContractBase for Sniffer {
         cfg.filter = self.filter.clone();
         // Une connexion Redis par module : `Cache` n'est ni `Clone` ni `Sync`,
         // et chaque module vit dans son thread.
-        let cache = Cache::connect(CacheConfig::from_env()?)?;
+        let mut cache = Cache::connect(CacheConfig::from_env()?)?;
+
+        cache.set("chatgpt.com", "true").expect("TODO: panic message");
 
         self.health.store(true, Ordering::Relaxed);
         let outcome = capture::sniff(&cfg, cache);

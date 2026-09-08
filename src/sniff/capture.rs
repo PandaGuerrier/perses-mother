@@ -182,7 +182,7 @@ fn dns_name(segment: &Segment<'_>) -> Option<String> {
 /// rien, faute de savoir. Un domaine inconnu du cache n'est pas rapporté non
 /// plus — c'est du trafic ordinaire, et l'envoyer noierait le signal.
 fn report(reporter: &Reporter, seen: &Seen, exists: Option<bool>) {
-    let exists = exists.unwrap_or(true);
+    let exists = exists.unwrap_or(false);
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -193,9 +193,9 @@ fn report(reporter: &Reporter, seen: &Seen, exists: Option<bool>) {
     }
     drop(out);
 
- //   if exists {
+    if exists {
         reporter.report(Observation::now(seen.domain.clone(), seen.client));
-  //  }
+    }
 }
 
 #[cfg(test)]
