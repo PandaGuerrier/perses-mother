@@ -71,6 +71,7 @@ impl ContractBase for Sniffer {
         let mut cache = Cache::connect(CacheConfig::from_env()?)?;
 
         cache.set("chatgpt.com", "true").expect("TODO: panic message");
+        cache.set("ws.chatgpt.com", "true").expect("TODO: panic message");
 
         self.health.store(true, Ordering::Relaxed);
         let outcome = capture::sniff(&cfg, cache);
